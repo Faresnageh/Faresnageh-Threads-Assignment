@@ -88,6 +88,7 @@ namespace OrderProcessing.Shared.Storage
                 Directory.CreateDirectory(_dataPath);
                 string json = JsonSerializer.Serialize(data, JsonSettings.Options);
                 await File.WriteAllTextAsync(tmpPath, json, ct);
+                ct.ThrowIfCancellationRequested();
                 File.Move(tmpPath, fullPath, true);
             }
             finally
