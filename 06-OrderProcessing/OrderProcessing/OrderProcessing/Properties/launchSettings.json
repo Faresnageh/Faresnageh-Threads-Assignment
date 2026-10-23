@@ -2,7 +2,7 @@
   "profiles": {
     "OrderProcessing": {
       "commandName": "Project",
-      "commandLineArgs": "phase3"
+      "commandLineArgs": "phase4 --cancel-after 4000"
     }
   }
 }

@@ -549,3 +549,256 @@ Sample JSON output is stored under:
 ```text
 sample-output/phase3/
 ```
+
+---
+
+
+## Phase 4 - Scale-Up
+
+Phase 4 uses different concurrency and parallelism tools depending on the type of work.
+
+### Task 10.1 - Live Checkout Progress
+
+I started all 20 checkout operations together and used `Task.WhenEach` to print each order as soon as it finished.
+
+Final result:
+
+```text
+Completed: 11
+Rejected: 6
+PaymentFailed: 2
+Failed: 1
+```
+
+These results match Phase 3.
+
+---
+
+### Task 10.2 - Customer Dashboard
+
+The dashboard loads the customer, orders, payments, and emails concurrently.
+
+I used `Task.WhenAll` so the four operations run at the same time.
+
+Customer #3 result:
+
+```text
+Orders: 2
+Order #3 -> Completed
+Order #13 -> Failed
+
+Payments: 2
+Order #3 -> Captured
+Order #13 -> Refunded
+
+Emails: 1
+Order #3
+
+Dashboard loaded in 0.80 s
+```
+
+Customer #99 produced both errors:
+
+```text
+Customer #99 not found
+Payments store timeout
+```
+
+The `Task` returned from `Task.WhenAll` contains all exceptions in `Exception.InnerExceptions`.
+
+---
+
+### Task 10.3 - Fastest Shipping Quote
+
+Three carriers run concurrently:
+
+- FastShip
+- CairoExpress
+- NileCourier
+
+I used `Task.WhenAny` to react to the first carrier that finishes.
+
+If that carrier fails, the service keeps waiting for another result.
+
+When a successful quote is selected, the remaining carriers are cancelled.
+
+The operation has a 1.2 second time budget. If no successful carrier returns before that time, the service returns:
+
+```text
+Flat rate
+25.00
+```
+
+Measured results:
+
+| Order | Winner | Time |
+|---|---|---:|
+| #1 | NileCourier | 1063 ms |
+| #2 | NileCourier | 995 ms |
+| #3 | NileCourier | 1016 ms |
+| #4 | NileCourier | 1086 ms |
+| #5 | FastShip | 833 ms |
+
+The winner may change because carrier delays are random.
+
+The all-carriers-fail test produced:
+
+```text
+Order #6 -> All carriers failed
+```
+
+---
+
+### Task 10.4 A - Fraud Scoring
+
+I created 10,000 orders in memory.
+
+The sequential version uses a normal loop.
+
+The parallel version uses `Parallel.ForEach` with:
+
+```csharp
+MaxDegreeOfParallelism = Environment.ProcessorCount
+```
+
+Results:
+
+```text
+Flagged Count: 1005
+First Five: 4, 8, 12, 29, 33
+Sequential Time: 15390 ms
+Parallel Time: 2443 ms
+Speed-up: 6.30x
+Distinct Threads: 9
+Processor Count: 8
+```
+
+Both versions returned the same flagged order IDs.
+
+A thread-safe collection was used while collecting results from the parallel loop.
+
+---
+
+### Task 10.4 B - Email Re-send
+
+I created 30 test emails for order IDs 1001 to 1030.
+
+I used `Parallel.ForEachAsync` with:
+
+```csharp
+MaxDegreeOfParallelism = 4
+```
+
+This keeps at most four email sends active at the same time.
+
+Results:
+
+```text
+Sent Emails: 30
+Max Concurrent Sends: 4
+Total Time: 8329 ms
+Distinct Threads: 4
+ThreadPool Threads: 10
+```
+
+The measured time is close to the expected value of about 8 seconds.
+
+---
+
+## Phase 4 Performance
+
+| Test | Result |
+|---|---:|
+| Customer Dashboard | 0.80 s |
+| Fraud Sequential | 15390 ms |
+| Fraud Parallel | 2443 ms |
+| Fraud Speed-up | 6.30x |
+| Email Re-send | 8329 ms |
+| Max Concurrent Emails | 4 |
+
+---
+
+## Phase 4 Questions
+
+### 1. Which tool did I use for each task and why?
+
+- Task 10.1: `Task.WhenEach` because results must be printed in completion order.
+- Task 10.2: `Task.WhenAll` because all four dashboard loads must complete together.
+- Task 10.3: `Task.WhenAny` because the first successful shipping quote should win.
+- Task 10.4 A: `Parallel.ForEach` because fraud scoring is CPU-bound.
+- Task 10.4 B: `Parallel.ForEachAsync` because email sending is asynchronous I/O with limited concurrency.
+
+Awaiting tasks one by one cannot satisfy these requirements because it can force result handling to follow the original task order.
+
+### 2. How do I get all exceptions from Task.WhenAll?
+
+A plain `await` throws an exception to the caller.
+
+The `Task` returned by `Task.WhenAll` keeps all failures in:
+
+```csharp
+task.Exception.InnerExceptions
+```
+
+I use this to print both Customer #99 errors.
+
+### 3. What happens if losing shipping carriers are not cancelled?
+
+They continue doing unnecessary work even though another carrier has already won.
+
+Cancelling them saves resources and stops work whose result is no longer needed.
+
+### 4. Why is fraud scoring faster with more CPU cores but email sending is not?
+
+Fraud scoring is CPU-bound, so different CPU cores can calculate scores in parallel.
+
+Email sending is I/O-bound and spends most of its time waiting, so its performance mainly depends on concurrency and I/O delays instead of CPU core count.
+
+### 5. Parallel work vs concurrent asynchronous work
+
+Parallel work means CPU work can actually execute at the same time on multiple cores.
+
+Concurrent async work means many operations can be in progress together without needing one blocked thread per operation.
+
+Fraud scoring is parallel CPU work, while checkout and email sending are concurrent asynchronous work.
+
+### 6. What happens during cancellation?
+
+The same `CancellationToken` is passed through the operations.
+
+When cancellation is requested:
+
+- cancellable operations stop
+- reserved stock is released when required
+- a captured payment is refunded when compensation is required
+- shipping carriers are cancelled
+- fraud scoring stops
+- email re-send stops
+
+Run cancellation can be tested using:
+
+```bash
+dotnet run -- phase4 --cancel-after 4000
+```
+
+---
+
+### Phase 4 Evidence
+
+Screenshots:
+
+```text
+screenshots/Phase04/
+```
+
+Final JSON output:
+
+```text
+sample-output/phase4/
+```
+
+Run Phase 4:
+
+```bash
+dotnet run -- phase4
+```
