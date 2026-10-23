@@ -150,64 +150,308 @@ I fixed this by protecting the read-and-update operation using SemaphoreSlim in 
 
 ## Phase 3 - Full Checkout Workflow
 
-Phase 3 implements the complete checkout workflow with payment processing, failure handling, refunds, email retries, and async demonstrations.
+Phase 3 implements the complete checkout workflow with concurrent order processing, payment handling, controlled failures, compensation, email retries, cancellation support, and async demonstrations.
 
 ### Features
 
-- Stock reservation before payment
 - Concurrent order processing
-- Payment timeout handling
+- Safe stock reservation and stock rollback on failure
+- Order pricing before payment
+- Payment processing through `IPaymentGateway`
+- Email sending through `IEmailService`
+- Payment timeout using a 3-second cancellation timeout
 - Payment decline handling
-- Payment refund when order saving fails after payment
-- Stock rollback when checkout fails
+- Payment refund when saving a completed order fails
+- Constructor-based failure injection
 - Email retry mechanism
-- Failed emails are saved to `email_retry.json`
-- Sync vs Async comparison using 10 threads and 10 async tasks
+- Failed emails are stored in `email_retry.json`
+- Cancellation support using `CancellationToken`
+- Sync vs Async demonstration
 - Fire-and-forget demonstration
 
-### Controlled Failure Scenarios
+### Controlled Failure Injection
 
-- Order #5: Payment timeout after exceeding the 3-second timeout
-- Order #8: Payment declined
-- Order #13: Payment succeeds, then database write fails, so the payment is refunded and stock is returned
-- Order #3: Email fails twice and succeeds on the third attempt
-- Order #17: Email fails all three attempts and is added to `email_retry.json` while the order remains Completed
+Failures are configured through constructors instead of checking specific order IDs inside the services.
 
-### Phase 3 Results
+```csharp
+OrderRepository orderRepository = new([13]);
 
-- Total Orders: 20
-- Completed: 11
-- Rejected: 6
-- Payment Failed: 2
-- Failed: 1
+PaymentGateway paymentGateway = new([5], [8]);
 
-### Payment Results
+EmailService emailService = new(new Dictionary<int, int>
+{
+    [3] = 2,
+    [17] = int.MaxValue
+});
+```
 
-- Captured: 11
-- Declined: 1
-- Refunded: 1
+This produces the following controlled scenarios:
 
-### Email Results
+- Order #5: payment capture exceeds the 3-second timeout and the order becomes `PaymentFailed`
+- Order #8: payment is declined with `Card declined by issuer`
+- Order #13: payment is captured, saving the completed order fails, the payment is refunded, stock is released, and the order becomes `Failed`
+- Order #3: email sending fails twice and succeeds on attempt 3
+- Order #17: email sending fails on all 4 attempts and is added to `email_retry.json`
+- A failed confirmation email does not change a successfully paid order from `Completed`
 
-- Sent Emails: 10
-- Email Retry: 1
+### Payment Processing
 
-### Sync vs Async Demo
+The payment gateway simulates three steps:
 
-The demo compares 10 manually created threads with 10 asynchronous tasks.
+```text
+Authorize      800 ms
+Fraud check    500 ms
+Capture        700 ms
+```
+
+Order #5 uses a 5000 ms capture delay to simulate a timeout.
+
+Transaction IDs use this format:
+
+```text
+TXN-XXXXXXXXXXXX
+```
+
+Example:
+
+```text
+TXN-D1F21E7D982D
+```
+
+### Payment Timeout
+
+Payment processing is linked to the main run cancellation token and also has a 3-second timeout.
+
+If only the payment timeout expires:
+
+```text
+Status = PaymentFailed
+FailureReason = Payment gateway timeout (3s)
+```
+
+The reserved stock is returned.
+
+If the whole application run is cancelled, the order is handled as a cancelled order instead of `PaymentFailed`.
+
+### Payment Decline
+
+Order #8 is configured as a declined payment.
+
+Result:
+
+```text
+Order #8 | PaymentFailed | Card declined by issuer
+```
+
+Its reserved stock is returned.
+
+### Database Failure After Payment
+
+Order #13 is configured through `OrderRepository` to fail when it is being saved with:
+
+```text
+Status = Completed
+```
+
+The simulated repository error is:
+
+```text
+Connection lost during commit
+```
+
+Because payment has already been captured, the processor performs compensation:
+
+1. Refund the captured payment
+2. Release the reserved stock
+3. Mark the order as `Failed`
+4. Save the final failure state
 
 Example result:
 
 ```text
-10 Threads Time: 1.00s
-10 Async Tasks Time: 1.01s
+Order #13 | Failed | Database save failed after payment; payment TXN-... refunded
 ```
 
-The purpose of the comparison is to demonstrate that asynchronous I/O does not require keeping a dedicated thread blocked while waiting.
+### Email Retry
+
+Confirmation emails use one initial attempt and up to three retries.
+
+The delays before retries are:
+
+```text
+Attempt 1
+↓ failure
+
+Wait 500 ms
+Attempt 2
+↓ failure
+
+Wait 1000 ms
+Attempt 3
+↓ failure
+
+Wait 2000 ms
+Attempt 4
+```
+
+Order #3 is configured to fail twice:
+
+```text
+Order #3 Email Attempts: 3
+```
+
+It succeeds on the third attempt and is stored normally in `emails.json`.
+
+Order #17 always fails:
+
+```text
+Order #17 Email Attempts: 4
+```
+
+After attempt 4, the email is stored in:
+
+```text
+email_retry.json
+```
+
+The order itself remains:
+
+```text
+Completed
+```
+
+### Final Order Results
+
+The final Phase 3 run produced:
+
+```text
+Total Orders: 20
+Completed: 11
+Rejected: 6
+Payment Failed: 2
+Failed: 1
+```
+
+Final order states:
+
+```text
+Order #1  | Completed
+Order #2  | Completed
+Order #3  | Completed
+Order #4  | Rejected      | Customer is inactive
+Order #5  | PaymentFailed | Payment gateway timeout (3s)
+Order #6  | Completed
+Order #7  | Completed
+Order #8  | PaymentFailed | Card declined by issuer
+Order #9  | Rejected      | Insufficient stock for 'Wireless Mouse'
+Order #10 | Completed
+Order #11 | Rejected      | Insufficient stock for 'Mechanical Keyboard'
+Order #12 | Rejected      | Coupon 'OLD20' has expired
+Order #13 | Failed        | Database save failed after payment; payment refunded
+Order #14 | Completed
+Order #15 | Rejected      | Customer #99 not found
+Order #16 | Completed
+Order #17 | Completed
+Order #18 | Rejected      | Coupon 'FAKE50' does not exist
+Order #19 | Completed
+Order #20 | Completed
+```
+
+Either Order #10 or Order #11 may get the last Mechanical Keyboard depending on which safe stock reservation completes first.
+
+### Payment Results
+
+```text
+Captured: 11
+Declined: 1
+Refunded: 1
+```
+
+- Order #8 has the declined payment
+- Order #13 has the refunded payment
+- Order #5 has no captured payment because its capture operation times out
+
+### Email Results
+
+```text
+Sent Emails: 10
+Email Retry: 1
+
+Order #3 Email Attempts: 3
+Order #17 Email Attempts: 4
+```
+
+### Final JSON Files
+
+The final Phase 3 output is copied to:
+
+```text
+sample-output/phase3/
+```
+
+Files:
+
+```text
+orders.json
+products.json
+payments.json
+emails.json
+email_retry.json
+```
+
+Expected important state:
+
+```text
+orders.json
+20 records
+11 Completed
+6 Rejected
+2 PaymentFailed
+1 Failed
+
+payments.json
+11 Captured
+1 Declined
+1 Refunded
+
+emails.json
+10 records
+
+email_retry.json
+1 record
+Order #17
+Attempts = 4
+LastError is set
+```
+
+### Sync vs Async Demo
+
+The current demonstration compares 10 manually created threads with 10 asynchronous tasks performing simulated waiting work.
+
+Measured result from the latest run:
+
+```text
+10 Threads Time: 1.03s
+10 Async Tasks Time: 1.02s
+```
+
+The wall-clock times are similar because both versions perform approximately one second of waiting concurrently.
+
+The important difference is resource usage.
+
+The thread version creates and blocks 10 dedicated threads:
+
+```text
+Thread #1 started on Thread 15
+...
+Thread #10 started on Thread 24
+```
+
+The asynchronous version can start many operations without creating one dedicated blocked thread per operation. While `Task.Delay` is waiting, no thread needs to remain blocked only for that delay.
 
 ### Fire-and-Forget Demo
 
-The fire-and-forget experiment starts an asynchronous operation without awaiting it immediately, allowing the calling method to continue executing.
+The fire-and-forget demonstration starts an asynchronous operation without awaiting it immediately.
 
 Example output:
 
@@ -218,8 +462,90 @@ Fire-and-forget task completed
 Fire-and-forget demo finished
 ```
 
+This demonstrates that the calling method continues without waiting for the asynchronous operation.
+
+Fire-and-forget work must be used carefully because the application may finish before the operation completes and exceptions can be missed if the task is not observed.
+
+### Why Constructor-Based Failure Injection?
+
+The controlled failures are passed into the services through their constructors.
+
+For example:
+
+```csharp
+PaymentGateway paymentGateway = new([5], [8]);
+```
+
+This keeps testing configuration outside the normal service logic.
+
+The payment gateway does not contain logic such as:
+
+```csharp
+if (orderId == 5)
+```
+
+to decide which order should fail.
+
+The same approach is used for database-save failures and email failures.
+
+### Compensation
+
+Checkout contains operations that cannot be rolled back automatically as one transaction because payment, stock, files, and email are separate operations.
+
+For this reason, compensation is performed manually.
+
+Examples:
+
+- Payment fails → release stock
+- Payment times out → release stock
+- Database save fails after payment → refund payment and release stock
+- Run cancellation after payment → refund payment and release stock
+- Email fails → keep the paid order `Completed` and retry or queue the email
+
+This keeps the final JSON data consistent even when part of the checkout workflow fails.
+
+### Cancellation
+
+All asynchronous operations receive a `CancellationToken`.
+
+The program supports cancellation using:
+
+```text
+Ctrl+C
+```
+
+or:
+
+```bash
+dotnet run -- phase3 --cancel-after 4000
+```
+
+Cancellation is propagated through asynchronous delays and file operations.
+
+A cancelled checkout should stop at its next cancellable operation, restore reserved stock, refund an already captured payment, and leave the order in a recoverable state.
+
 ### Run Phase 3
 
 ```bash
 dotnet run -- phase3
+```
+
+Run with automatic cancellation:
+
+```bash
+dotnet run -- phase3 --cancel-after 4000
+```
+
+### Phase 3 Evidence
+
+Screenshots are stored under:
+
+```text
+screenshots/Phase03/
+```
+
+Sample JSON output is stored under:
+
+```text
+sample-output/phase3/
 ```

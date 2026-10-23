@@ -12,13 +12,10 @@ namespace OrderProcessing.Phase3
         OrderRepository orderRepository;
         CustomerRepository customerRepository;
         OrderPricer orderPricer;
-        PaymentGateway paymentGateway;
-        EmailService emailService;
+        IPaymentGateway paymentGateway;
+        IEmailService emailService;
 
-        public OrderProcessor(ProductRepository productRepository,OrderRepository orderRepository,CustomerRepository customerRepository,
-            OrderPricer orderPricer,
-            PaymentGateway paymentGateway,
-            EmailService emailService)
+        public OrderProcessor(ProductRepository productRepository, OrderRepository orderRepository, CustomerRepository customerRepository, OrderPricer orderPricer, IPaymentGateway paymentGateway, IEmailService emailService)
         {
             this.productRepository = productRepository;
             this.orderRepository = orderRepository;
@@ -27,7 +24,6 @@ namespace OrderProcessing.Phase3
             this.paymentGateway = paymentGateway;
             this.emailService = emailService;
         }
-
 
         public async Task<bool> ProcessAsync(Order order, CancellationToken ct)
         {
@@ -39,11 +35,11 @@ namespace OrderProcessing.Phase3
             {
                 foreach (OrderItem item in order.Items)
                 {
-                    bool reserved = await productRepository.ReserveStockAsync( item.ProductId,item.Quantity,ct);
+                    bool reserved = await productRepository.ReserveStockAsync(item.ProductId, item.Quantity, ct);
 
                     if (!reserved)
                     {
-                        Product? product = await productRepository.GetByIdAsync(item.ProductId,ct);
+                        Product? product = await productRepository.GetByIdAsync(item.ProductId, ct);
 
                         string productName = product?.Name ?? $"Product #{item.ProductId}";
 
@@ -58,28 +54,25 @@ namespace OrderProcessing.Phase3
                     reservedItems.Add(item);
                 }
 
-
                 await orderPricer.PriceOrderAsync(order, ct);
 
-
-                using CancellationTokenSource paymentCts =CancellationTokenSource.CreateLinkedTokenSource(ct);
+                using CancellationTokenSource paymentCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
                 paymentCts.CancelAfter(3000);
 
                 try
                 {
-                    paymentResult = await paymentGateway.ChargeAsync(order.Id,order.TotalAmount,paymentCts.Token);
+                    paymentResult = await paymentGateway.ProcessPaymentAsync(order.Id, order.TotalAmount, paymentCts.Token);
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
                     order.Status = OrderStatus.PaymentFailed;
-                    order.FailureReason = "Payment timeout";
+                    order.FailureReason = "Payment gateway timeout (3s)";
 
                     await orderRepository.SaveAsync(order, ct);
 
                     return false;
                 }
-
 
                 if (!paymentResult.Success)
                 {
@@ -91,79 +84,62 @@ namespace OrderProcessing.Phase3
                     return false;
                 }
 
-
-                if (order.Id == 13)
-                {
-                    throw new DatabaseWriteException("Database write failed after payment");
-                }
-
-
+                order.TransactionId = paymentResult.TransactionId;
                 order.Status = OrderStatus.Completed;
                 order.FailureReason = null;
 
                 await orderRepository.SaveAsync(order, ct);
 
-                completed = true;
-
-
-                Customer? customer = await customerRepository.GetByIdAsync(order.CustomerId,ct);
+                Customer? customer = await customerRepository.GetByIdAsync(order.CustomerId, ct);
 
                 if (customer is not null)
                 {
-                    EmailMessage email = new()
-                    {
-                        OrderId = order.Id,
-                        To = customer.Email,
-                        Subject = $"Order #{order.Id} Confirmation",
-                        Body = $"Your order #{order.Id} has been completed. Total: {order.TotalAmount:F2}",
-                        Attempts = 0
-                    };
-
-                    await SendEmailWithRetryAsync(email, ct);
+                    await SendEmailWithRetryAsync(order, customer, ct);
                 }
+
+                completed = true;
 
                 return true;
             }
-            catch (DatabaseWriteException ex)
+            catch (DatabaseWriteException)
             {
-                if (paymentResult?.Success == true &&
-                    paymentResult.TransactionId is not null)
+                if (paymentResult?.Success == true && paymentResult.TransactionId is not null)
                 {
-                    await paymentGateway.RefundAsync(order.Id,paymentResult.TransactionId,CancellationToken.None);
+                    await paymentGateway.RefundAsync(paymentResult.TransactionId, CancellationToken.None);
                 }
 
                 order.Status = OrderStatus.Failed;
-                order.FailureReason = ex.Message;
+                order.FailureReason = $"Database save failed after payment; payment {paymentResult?.TransactionId} refunded";
 
-                await orderRepository.SaveAsync(order,CancellationToken.None);
+                await orderRepository.SaveAsync(order, CancellationToken.None);
 
                 return false;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                if (paymentResult?.Success == true &&paymentResult.TransactionId is not null)
+                if (paymentResult?.Success == true && paymentResult.TransactionId is not null)
                 {
-                    await paymentGateway.RefundAsync(order.Id,paymentResult.TransactionId,CancellationToken.None);
+                    await paymentGateway.RefundAsync(paymentResult.TransactionId, CancellationToken.None);
                 }
 
                 order.Status = OrderStatus.Pending;
                 order.FailureReason = "Cancelled";
 
-                await orderRepository.SaveAsync(order,CancellationToken.None);
+                await orderRepository.SaveAsync(order, CancellationToken.None);
 
                 throw;
             }
             catch (Exception ex)
             {
-                if (paymentResult?.Success == true &&paymentResult.TransactionId is not null)
+                if (paymentResult?.Success == true && paymentResult.TransactionId is not null)
                 {
-                    await paymentGateway.RefundAsync(order.Id,paymentResult.TransactionId,CancellationToken.None);
+                    await paymentGateway.RefundAsync(paymentResult.TransactionId, CancellationToken.None);
                 }
 
                 order.Status = OrderStatus.Failed;
                 order.FailureReason = ex.Message;
 
-                await orderRepository.SaveAsync(order,CancellationToken.None);
+                await orderRepository.SaveAsync(order, CancellationToken.None);
 
                 return false;
             }
@@ -173,37 +149,45 @@ namespace OrderProcessing.Phase3
                 {
                     foreach (OrderItem item in reservedItems)
                     {
-                        await productRepository.ReleaseStockAsync(item.ProductId,item.Quantity, CancellationToken.None);
+                        await productRepository.ReleaseStockAsync(item.ProductId, item.Quantity, CancellationToken.None);
                     }
                 }
             }
         }
 
-
-        private async Task SendEmailWithRetryAsync(EmailMessage email,CancellationToken ct)
+        private async Task SendEmailWithRetryAsync(Order order, Customer customer, CancellationToken ct)
         {
-            const int maxAttempts = 3;
+            const int maxAttempts = 4;
 
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
+                if (attempt == 2)
+                {
+                    await Task.Delay(500, ct);
+                }
+                else if (attempt == 3)
+                {
+                    await Task.Delay(1000, ct);
+                }
+                else if (attempt == 4)
+                {
+                    await Task.Delay(2000, ct);
+                }
+
                 try
                 {
-                    await emailService.SendAsync(email, ct);
+                    await emailService.SendConfirmationAsync(order, customer, ct);
                     return;
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException ||!ct.IsCancellationRequested)
+                catch (SmtpUnavailableException ex)
                 {
-                    email.LastError = ex.Message;
-
-                    Log.Info($"EmailService -> Attempt {attempt} failed for Order #{email.OrderId}");
+                    Log.Info($"EmailService -> Attempt {attempt} failed for Order #{order.Id}: {ex.Message}");
 
                     if (attempt == maxAttempts)
                     {
-                        await emailService.AddToRetryAsync(email, ct);
+                        await emailService.AddToRetryAsync(order, customer, ct);
                         return;
                     }
-
-                    await Task.Delay(500, ct);
                 }
             }
         }

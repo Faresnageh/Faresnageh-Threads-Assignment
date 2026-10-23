@@ -12,7 +12,7 @@ namespace OrderProcessing.Phase3
             DataSeeder seeder = new();
 
             ProductRepository productRepository = new();
-            OrderRepository orderRepository = new();
+            OrderRepository orderRepository = new([13]);
             CustomerRepository customerRepository = new();
             IncomingOrderRepository incomingOrderRepository = new();
             OrderValidator orderValidator = new();
@@ -20,8 +20,13 @@ namespace OrderProcessing.Phase3
             PricingService pricingService = new([]);
             OrderPricer orderPricer = new(pricingService);
 
-            PaymentGateway paymentGateway = new();
-            EmailService emailService = new();
+            PaymentGateway paymentGateway = new([5], [8]);
+
+            EmailService emailService = new(new Dictionary<int, int>
+            {
+                [3] = 2,
+                [17] = int.MaxValue
+            });
 
             OrderProcessor orderProcessor = new(productRepository, orderRepository, customerRepository, orderPricer, paymentGateway, emailService);
 
@@ -113,6 +118,19 @@ namespace OrderProcessing.Phase3
 
             Console.WriteLine($"Sent Emails: {emails.Count}");
             Console.WriteLine($"Email Retry: {emailRetry.Count}");
+
+            EmailMessage? order3Email = emails.FirstOrDefault(e => e.OrderId == 3);
+            EmailMessage? order17Retry = emailRetry.FirstOrDefault(e => e.OrderId == 17);
+
+            if (order3Email is not null)
+            {
+                Console.WriteLine($"Order #3 Email Attempts: {order3Email.Attempts}");
+            }
+
+            if (order17Retry is not null)
+            {
+                Console.WriteLine($"Order #17 Email Attempts: {order17Retry.Attempts}");
+            }
 
             SyncVsAsyncDemo syncVsAsyncDemo = new();
             await syncVsAsyncDemo.RunAsync();
