@@ -9,8 +9,6 @@
 
   <ItemGroup>
     <Folder Include="Phase4\" />
-    <Folder Include="Phase3\" />
-    <Folder Include="Shared\Exceptions\" />
   </ItemGroup>
 
 </Project>

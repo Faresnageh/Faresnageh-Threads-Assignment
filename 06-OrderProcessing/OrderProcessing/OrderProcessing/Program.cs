@@ -1,5 +1,6 @@
 ﻿using OrderProcessing.Phase1;
 using OrderProcessing.Phase2;
+using OrderProcessing.Phase3;
 
 namespace OrderProcessing
 {
@@ -48,6 +49,11 @@ namespace OrderProcessing
                 {
                     Phase2Runner phase2 = new();
                     await phase2.RunAsync(cts.Token);
+                }
+                else if (phase == "phase3")
+                {
+                    Phase3Runner phase3 = new();
+                    await phase3.RunAsync(cts.Token);
                 }
                 else
                 {

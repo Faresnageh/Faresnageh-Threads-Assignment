@@ -145,3 +145,81 @@ A lock is designed for synchronous code and thread-based locking. Await may susp
 Both operations read the same stock value before either update was completed. Both believed the last keyboard was available.
 
 I fixed this by protecting the read-and-update operation using SemaphoreSlim in JsonFileStore.UpdateAsync. After the fix, only one reservation succeeded.
+
+---
+
+## Phase 3 - Full Checkout Workflow
+
+Phase 3 implements the complete checkout workflow with payment processing, failure handling, refunds, email retries, and async demonstrations.
+
+### Features
+
+- Stock reservation before payment
+- Concurrent order processing
+- Payment timeout handling
+- Payment decline handling
+- Payment refund when order saving fails after payment
+- Stock rollback when checkout fails
+- Email retry mechanism
+- Failed emails are saved to `email_retry.json`
+- Sync vs Async comparison using 10 threads and 10 async tasks
+- Fire-and-forget demonstration
+
+### Controlled Failure Scenarios
+
+- Order #5: Payment timeout after exceeding the 3-second timeout
+- Order #8: Payment declined
+- Order #13: Payment succeeds, then database write fails, so the payment is refunded and stock is returned
+- Order #3: Email fails twice and succeeds on the third attempt
+- Order #17: Email fails all three attempts and is added to `email_retry.json` while the order remains Completed
+
+### Phase 3 Results
+
+- Total Orders: 20
+- Completed: 11
+- Rejected: 6
+- Payment Failed: 2
+- Failed: 1
+
+### Payment Results
+
+- Captured: 11
+- Declined: 1
+- Refunded: 1
+
+### Email Results
+
+- Sent Emails: 10
+- Email Retry: 1
+
+### Sync vs Async Demo
+
+The demo compares 10 manually created threads with 10 asynchronous tasks.
+
+Example result:
+
+```text
+10 Threads Time: 1.00s
+10 Async Tasks Time: 1.01s
+```
+
+The purpose of the comparison is to demonstrate that asynchronous I/O does not require keeping a dedicated thread blocked while waiting.
+
+### Fire-and-Forget Demo
+
+The fire-and-forget experiment starts an asynchronous operation without awaiting it immediately, allowing the calling method to continue executing.
+
+Example output:
+
+```text
+Starting fire-and-forget task...
+Main method continued without waiting
+Fire-and-forget task completed
+Fire-and-forget demo finished
+```
+
+### Run Phase 3
+
+```bash
+dotnet run -- phase3
+```

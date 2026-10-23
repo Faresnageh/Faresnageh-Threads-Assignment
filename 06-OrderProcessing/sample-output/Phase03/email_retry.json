@@ -1,0 +1,12 @@
+[
+  {
+    "id": "00000000-0000-0000-0000-000000000000",
+    "orderId": 17,
+    "to": "karim.samir@example.com",
+    "subject": "Order #17 Confirmation",
+    "body": "Your order #17 has been completed. Total: 687.30",
+    "sentAt": "0001-01-01T00:00:00",
+    "attempts": 3,
+    "lastError": "Email provider unavailable"
+  }
+]
