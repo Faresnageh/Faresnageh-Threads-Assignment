@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "OrderProcessing": {
+      "commandName": "Project",
+      "commandLineArgs": "phase4 --cancel-after 4000"
+    }
+  }
+}
